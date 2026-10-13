@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Proctored Online Examination Portal</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- jsPDF Library for Certificate Generation -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <style>
+        /* Disable text selection and copying across the site */
+        body {
+            -webkit-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
+            user-select: none;
+        }
+        /* Blur background when lost focus or taking screenshot attempt */
+        .secure-blur {
+            filter: blur(20px) grayscale(100%);
+            transition: filter 0.2s ease;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen text-gray-800 flex flex-col justify-between">
+
+    <!-- Anti-Cheat Overlay Protection Banner -->
+    <div id="violation-overlay" class="hidden fixed inset-0 bg-red-900 bg-opacity-95 z-50 flex flex-col items-center justify-center text-white p-6 text-center">
+        <h2 class="text-3xl font-bold mb-4">⚠️ PROCTORING VIOLATION DETECTED</h2>
+        <p id="violation-msg" class="text-xl mb-6">Exiting full-screen or switching windows is strictly forbidden.</p>
+        <p class="text-lg font-semibold mb-6">Warnings Remaining: <span id="warnings-left" class="text-yellow-400 font-bold">2</span></p>
+        <button id="reenter-fs-btn" class="bg-yellow-500 hover:bg-yellow-600 text-black font-bold py-3 px-8 rounded-lg shadow-lg text-lg">
+            Re-Enter Fullscreen & Resume Test
+        </button>
+    </div>
+
+    <!-- Main Container -->
+    <div id="app-container" class="container mx-auto px-4 py-8 max-w-4xl">
+        
+        <!-- HEADER / NAVIGATION -->
+        <header class="mb-8 text-center border-b pb-4">
+            <h1 class="text-3xl font-extrabold text-blue-900">Online Examination & Certification Portal</h1>
+            <p class="text-gray-600 mt-1">Anti-Cheating Monitored Environment</p>
+        </header>
+
+        <!-- 1. AUTHENTICATION / LOGIN CARD -->
+        <div id="login-card" class="bg-white p-8 rounded-xl shadow-md max-w-md mx-auto">
+            <h2 class="text-2xl font-bold mb-6 text-gray-800 text-center">Candidate Login</h2>
+            <div class="mb-4">
+                <label class="block font-semibold mb-2 text-sm">Registered Email:</label>
+                <input type="email" id="email-input" placeholder="student1@gmail.com" class="w-full border p-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+            </div>
+            <div class="mb-6">
+                <label class="block font-semibold mb-2 text-sm">Exam Passkey:</label>
+                <input type="password" id="passkey-input" placeholder="PASS123" class="w-full border p-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+            </div>
+            <button id="login-btn" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-lg shadow transition">
+                Authenticate & Start Test
+            </button>
+            <p id="login-err" class="text-red-500 text-sm mt-4 text-center hidden"></p>
+        </div>
+
+        <!-- 2. FULLSCREEN GATEWAY CARD -->
+        <div id="gateway-card" class="hidden bg-white p-8 rounded-xl shadow-md text-center max-w-lg mx-auto">
+            <h2 class="text-2xl font-bold mb-4 text-gray-800">🛡️ Fullscreen Pre-Check</h2>
+            <p class="text-gray-600 mb-6">
+                This examination is strictly proctored. You must grant full-screen access to start. Exiting full-screen or switching tabs will register warning strikes.
+            </p>
+            <button id="start-exam-btn" class="bg-green-600 hover:bg-green-700 text-white font-bold py-4 px-8 rounded-lg text-lg shadow-lg transition">
+                🚀 Enable Fullscreen & Begin Exam
+            </button>
+        </div>
+
+        <!-- 3. EXAMINATION INTERFACE -->
+        <div id="exam-card" class="hidden">
+            <!-- Status Bar -->
+            <div class="bg-blue-900 text-white p-4 rounded-xl flex justify-between items-center mb-6 shadow-md">
+                <div>
+                    <span class="text-sm opacity-80 block">Candidate:</span>
+                    <span id="active-candidate" class="font-bold"></span>
+                </div>
+                <div class="bg-red-800 px-4 py-2 rounded-lg font-bold">
+                    Violations: <span id="violation-count" class="text-yellow-400">0</span> / 2
+                </div>
+            </div>
+
+            <!-- Questions Form Container -->
+            <form id="questions-form" class="space-y-6 bg-white p-8 rounded-xl shadow-md">
+                <div id="questions-container" class="space-y-8"></div>
+                <button type="submit" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 rounded-lg text-lg shadow-lg transition">
+                    Finalize & Submit Exam Responses
+                </button>
+            </form>
+        </div>
+
+        <!-- 4. RESULT & CERTIFICATE DISPLAY -->
+        <div id="result-card" class="hidden bg-white p-8 rounded-xl shadow-md text-center max-w-lg mx-auto">
+            <div id="pass-view" class="hidden">
+                <h2 class="text-3xl font-extrabold text-green-600 mb-2">🎉 Exam Completed!</h2>
+                <p class="text-gray-600 mb-6">Your responses have been successfully evaluated.</p>
+                <div class="bg-gray-100 p-4 rounded-lg mb-6">
+                    <p class="text-gray-600 text-sm">Final Score</p>
+                    <p id="score-text" class="text-4xl font-bold text-blue-900 mt-1">0 / 30</p>
+                </div>
+                <button id="download-cert-btn" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 rounded-lg shadow-lg">
+                    📄 Download Participation Certificate (PDF)
+                </button>
+            </div>
+
+            <div id="fail-view" class="hidden">
+                <h2 class="text-3xl font-extrabold text-red-600 mb-2">⛔ EXAM DISQUALIFIED</h2>
+                <p class="text-gray-700 mt-4">
+                    You were flagged for violating exam anti-cheating regulations 3 times. Your score has been voided.
+                </p>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- FOOTER -->
+    <footer class="text-center py-4 text-xs text-gray-500">
+        Standalone Proctored Examination System
+    </footer>
+
+    <!-- SCRIPT LOGIC -->
+    <script>
+        // Authorized Candidates Dataset
+        const CANDIDATES = {
+            "student1@gmail.com": "PASS123",
+            "student2@gmail.com": "PASS456"
+        };
+
+        // Question Bank Generator (30 randomized questions)
+        const QUESTION_BANK = Array.from({ length: 100 }, (_, i) => ({
+            id: i + 1,
+            question: `Question ${i + 1}: What is the output or core principle of Computer Science Topic #${i + 1}?`,
+            options: [`Option A for #${i + 1}`, `Option B (Correct) for #${i + 1}`, `Option C for #${i + 1}`, `Option D for #${i + 1}`],
+            correct: 1
+        }));
+
+        // Application State Variables
+        let activeUser = "";
+        let assignedQuestions = [];
+        let violations = 0;
+        let isExamActive = false;
+
+        // Element Selectors
+        const loginCard = document.getElementById('login-card');
+        const gatewayCard = document.getElementById('gateway-card');
+        const examCard = document.getElementById('exam-card');
+        const resultCard = document.getElementById('result-card');
+        const violationOverlay = document.getElementById('violation-overlay');
+
+        // 1. LOGIN HANDLER
+        document.getElementById('login-btn').addEventListener('click', () => {
+            const email = document.getElementById('email-input').value.trim().toLowerCase();
+            const passkey = document.getElementById('passkey-input').value.trim();
+            const errEl = document.getElementById('login-err');
+
+            if (CANDIDATES[email] && CANDIDATES[email] === passkey) {
+                activeUser = email;
+                errEl.classList.add('hidden');
+                loginCard.classList.add('hidden');
+                gatewayCard.classList.remove('hidden');
+            } else {
+                errEl.textContent = "Invalid Email or Exam Passkey combination.";
+                errEl.classList.remove('hidden');
+            }
+        });
+
+        // 2. START EXAM & FULLSCREEN REQUEST
+        document.getElementById('start-exam-btn').addEventListener('click', () => {
+            requestFullscreen();
+            gatewayCard.classList.add('hidden');
+            examCard.classList.remove('hidden');
+            document.getElementById('active-candidate').textContent = activeUser;
+            
+            // Randomly select 30 questions
+            assignedQuestions = [...QUESTION_BANK].sort(() => 0.5 - Math.random()).slice(0, 30);
+            renderQuestions();
+            isExamActive = true;
+        });
+
+        // 3. RENDER QUESTIONS FORM
+        function renderQuestions() {
+            const container = document.getElementById('questions-container');
+            container.innerHTML = "";
+
+            assignedQuestions.forEach((q, idx) => {
+                const qDiv = document.createElement('div');
+                qDiv.className = "border-b pb-6";
+                qDiv.innerHTML = `
+                    <p class="font-bold text-lg text-gray-800 mb-3">${idx + 1}. ${q.question}</p>
+                    <div class="space-y-2">
+                        ${q.options.map((opt, oIdx) => `
+                            <label class="flex items-center space-x-3 p-3 rounded-lg border hover:bg-gray-50 cursor-pointer">
+                                <input type="radio" name="q_${q.id}" value="${oIdx}" class="h-4 w-4 text-blue-600" required>
+                                <span class="text-gray-700">${opt}</span>
+                            </label>
+                        `).join('')}
+                    </div>
+                `;
+                container.appendChild(qDiv);
+            });
+        }
+
+        // 4. SUBMIT EXAM & CALCULATE SCORE
+        document.getElementById('questions-form').addEventListener('submit', (e) => {
+            e.preventDefault();
+            if (!isExamActive) return;
+
+            isExamActive = false;
+            let score = 0;
+            const formData = new FormData(e.target);
+
+            assignedQuestions.forEach(q => {
+                const ans = formData.get(`q_${q.id}`);
+                if (parseInt(ans) === q.correct) {
+                    score++;
+                }
+            });
+
+            examCard.classList.add('hidden');
+            resultCard.classList.remove('hidden');
+            document.getElementById('pass-view').classList.remove('hidden');
+            document.getElementById('score-text').textContent = `${score} / 30`;
+
+            // Prepare Certificate Download Listener
+            document.getElementById('download-cert-btn').onclick = () => generatePDF(activeUser, score);
+        });
+
+        // 5. ANTI-CHEAT ENFORCEMENT SUITE
+        function triggerViolation(reason) {
+            if (!isExamActive) return;
+
+            violations++;
+            document.getElementById('violation-count').textContent = violations;
+
+            if (violations >= 3) {
+                // Instant Disqualification
+                isExamActive = false;
+                violationOverlay.classList.add('hidden');
+                examCard.classList.add('hidden');
+                resultCard.classList.remove('hidden');
+                document.getElementById('fail-view').classList.remove('hidden');
+            } else {
+                // Show Overlay Warning Modal
+                document.getElementById('violation-msg').textContent = reason;
+                document.getElementById('warnings-left').textContent = 3 - violations;
+                violationOverlay.classList.remove('hidden');
+                document.body.classList.add('secure-blur');
+            }
+        }
+
+        // Re-enter Fullscreen Button Listener
+        document.getElementById('reenter-fs-btn').addEventListener('click', () => {
+            requestFullscreen();
+            violationOverlay.classList.add('hidden');
+            document.body.classList.remove('secure-blur');
+        });
+
+        // Event Listeners: Copy, Cut, ContextMenu, Keyboard Shortcuts
+        document.addEventListener('contextmenu', e => e.preventDefault());
+        document.addEventListener('copy', e => e.preventDefault());
+        document.addEventListener('cut', e => e.preventDefault());
+        document.addEventListener('paste', e => e.preventDefault());
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key === "PrintScreen" || (e.ctrlKey && ['c', 'v', 'u', 's', 'p'].includes(e.key.toLowerCase())) || e.key === "F12") {
+                e.preventDefault();
+                triggerViolation("Screenshot or Copy keyboard shortcut attempt detected.");
+            }
+        });
+
+        // Fullscreen Exit Tracking
+        document.addEventListener('fullscreenchange', () => {
+            if (!document.fullscreenElement && isExamActive) {
+                triggerViolation("Exited Fullscreen mode!");
+            }
+        });
+
+        // Tab Switch / Minimizing App Tracking
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden && isExamActive) {
+                triggerViolation("Switched browser tab or minimized application!");
+            }
+        });
+
+        // Helper: Fullscreen Launcher
+        function requestFullscreen() {
+            const el = document.documentElement;
+            if (el.requestFullscreen) el.requestFullscreen().catch(() => {});
+            else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen().catch(() => {});
+        }
+
+        // Helper: PDF Certificate Generator
+        function generatePDF(email, score) {
+            const { jsPDF } = window.jspdf;
+            const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+
+            doc.setLineWidth(2);
+            doc.rect(10, 10, 277, 190);
+
+            doc.setFont("Helvetica", "bold");
+            doc.setFontSize(26);
+            doc.text("CERTIFICATE OF PARTICIPATION", 148, 50, { align: "center" });
+
+            doc.setFont("Helvetica", "normal");
+            doc.setFontSize(16);
+            doc.text("This certificate is proudly awarded to:", 148, 80, { align: "center" });
+
+            doc.setFont("Helvetica", "bold");
+            doc.setFontSize(22);
+            doc.text(email, 148, 105, { align: "center" });
+
+            doc.setFont("Helvetica", "normal");
+            doc.setFontSize(14);
+            doc.text(`For successfully completing the examination with a score of ${score}/30.`, 148, 135, { align: "center" });
+
+            doc.save(`Certificate_${email}.pdf`);
+        }
+    </script>
+</body>
+</html>
