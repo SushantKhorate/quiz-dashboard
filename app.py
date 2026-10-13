@@ -1,6 +1,5 @@
 import streamlit as st
 import random
-import time
 from supabase import create_client, Client
 from fpdf import FPDF
 
@@ -108,7 +107,6 @@ if not st.session_state.logged_in and not st.session_state.exam_finished:
             authenticated = False
             has_attempted = False
             
-            # 1. Try Authenticating against Supabase
             if supabase:
                 try:
                     res = supabase.table("candidates").select("*").eq("email", email_input).eq("passkey", passkey_input).execute()
@@ -119,12 +117,10 @@ if not st.session_state.logged_in and not st.session_state.exam_finished:
                 except Exception:
                     pass
             
-            # 2. Local Fallback Verification
             if not authenticated and email_input in LOCAL_CANDIDATES:
                 if LOCAL_CANDIDATES[email_input] == passkey_input:
                     authenticated = True
 
-            # Process Authentication Result
             if authenticated:
                 if has_attempted:
                     st.error("❌ You have already submitted or attempted this examination.")
@@ -132,7 +128,6 @@ if not st.session_state.logged_in and not st.session_state.exam_finished:
                     st.session_state.logged_in = True
                     st.session_state.candidate_email = email_input
                     
-                    # Fetch 30 Random Questions
                     fetched_q = []
                     if supabase:
                         try:
@@ -157,59 +152,47 @@ if not st.session_state.logged_in and not st.session_state.exam_finished:
 # ==========================================
 elif st.session_state.logged_in and not st.session_state.exam_finished:
 
-    # Enforce Fullscreen Trigger Button
     if not st.session_state.fullscreen_active:
         st.subheader("🛡️ Proctoring Pre-Check")
         st.warning("This examination requires mandatory **Full-Screen Mode**. Exiting full-screen, switching apps, or attempting screenshots will add a strike violation!")
         
-        # JavaScript Fullscreen Initiator Component
-        st.components.v1.html("""
-            <div style="text-align: center; margin-top: 20px;">
-                <button id="fs-btn" style="background-color: #ff4b4b; color: white; border: none; padding: 15px 32px; text-align: center; font-size: 18px; font-weight: bold; border-radius: 8px; cursor: pointer;">
-                    🚀 Enable Full-Screen & Start Examination
-                </button>
-            </div>
-            <script>
-            document.getElementById('fs-btn').addEventListener('click', function() {
-                const docEl = window.parent.document.documentElement;
-                if (docEl.requestFullscreen) {
-                    docEl.requestFullscreen();
-                } else if (docEl.webkitRequestFullscreen) {
-                    docEl.webkitRequestFullscreen();
-                } else if (docEl.msRequestFullscreen) {
-                    docEl.msRequestFullscreen();
-                }
-                
-                // Signal Python backend that full screen was enabled
-                window.parent.location.search = '?fullscreen=true';
-            });
-            </script>
-        """, height=100)
-        
-        if "fullscreen" in st.query_params:
-            st.session_state.fullscreen_active = True
-            st.query_params.clear()
-            st.rerun()
+        col_center = st.columns([1, 2, 1])[1]
+        with col_center:
+            if st.button("🚀 Enable Full-Screen & Start Examination", type="primary", use_container_width=True):
+                st.session_state.fullscreen_active = True
+                st.rerun()
 
     else:
-        # Full Anti-Cheat Monitoring Suite
+        # Full Anti-Cheat Monitoring Suite (Fires directly in top window context)
         st.components.v1.html("""
             <script>
             const doc = window.parent.document;
             const win = window.parent;
 
-            function recordViolation(reason) {
-                alert("🚨 CHEAT WARNING: " + reason + "\\nA penalty strike has been registered!");
-                win.location.search = '?action=violation';
+            // Automatically request full screen on parent window load
+            if (!doc.fullscreenElement && !doc.webkitFullscreenElement) {
+                const docEl = doc.documentElement;
+                if (docEl.requestFullscreen) {
+                    docEl.requestFullscreen().catch(err => console.log(err));
+                } else if (docEl.webkitRequestFullscreen) {
+                    docEl.webkitRequestFullscreen().catch(err => console.log(err));
+                }
             }
 
-            // 1. Disable Right Click, Copy, Cut, Paste, and Selection
+            function recordViolation(reason) {
+                alert("🚨 CHEAT WARNING: " + reason + "\\nA penalty strike has been registered!");
+                const currentUrl = new URL(win.location.href);
+                currentUrl.searchParams.set('action', 'violation');
+                win.location.href = currentUrl.toString();
+            }
+
+            // 1. Context Menu & Selection Prevention
             doc.addEventListener('contextmenu', e => e.preventDefault());
             doc.addEventListener('copy', e => e.preventDefault());
             doc.addEventListener('cut', e => e.preventDefault());
             doc.addEventListener('paste', e => e.preventDefault());
 
-            // 2. Block Keyboard Shortcuts (PrintScreen, Ctrl+C, Ctrl+V, F12)
+            // 2. Keyboard Shortcut Prevention
             doc.addEventListener('keydown', e => {
                 if (e.key === "PrintScreen" || 
                    (e.ctrlKey && (e.key === 'c' || e.key === 'u' || e.key === 's' || e.key === 'v')) || 
@@ -219,14 +202,14 @@ elif st.session_state.logged_in and not st.session_state.exam_finished:
                 }
             });
 
-            // 3. Monitor Full Screen Exit
+            // 3. Full Screen Exit Detection
             doc.addEventListener('fullscreenchange', () => {
-                if (!doc.fullscreenElement) {
+                if (!doc.fullscreenElement && !doc.webkitFullscreenElement) {
                     recordViolation("Exited Full-Screen mode!");
                 }
             });
 
-            // 4. Monitor Window/Tab Switch & Floating Apps
+            // 4. Tab Switch & App Blur Detection
             doc.addEventListener('visibilitychange', () => {
                 if (doc.hidden) {
                     recordViolation("Switched browser tabs or minimized window!");
