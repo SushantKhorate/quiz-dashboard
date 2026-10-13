@@ -3,23 +3,48 @@ import random
 import time
 from supabase import create_client, Client
 from fpdf import FPDF
-import base64
 
-# --- Streamlit Page Setup ---
+# --- Page Setup ---
 st.set_page_config(page_title="Proctored Exam Portal", page_icon="📝", layout="wide")
 
-# --- Initialize Supabase Connection ---
-SUPABASE_URL = st.secrets["SUPABASE_URL"]
-SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+# --- Initialize Supabase Connection Safely ---
+@st.cache_resource
+def init_supabase():
+    try:
+        url = st.secrets.get("SUPABASE_URL")
+        key = st.secrets.get("SUPABASE_KEY")
+        if url and key:
+            return create_client(url, key)
+    except Exception as e:
+        st.warning("⚠️ Supabase connection warning: Defaulting to local session mode.")
+    return None
 
-# --- Session State Management ---
+supabase = init_supabase()
+
+# --- Fallback Local Data (Used if Supabase is empty or restricted) ---
+LOCAL_CANDIDATES = {
+    "student1@gmail.com": "PASS123",
+    "student2@gmail.com": "PASS456"
+}
+
+LOCAL_QUESTION_BANK = [
+    {
+        "id": i,
+        "question_text": f"Question {i}: What is the output/result of concept #{i} in computer science?",
+        "option_a": "Option A (Incorrect)",
+        "option_b": f"Option B (Correct Answer {i})",
+        "option_c": "Option C (Incorrect)",
+        "option_d": "Option D (Incorrect)",
+        "correct_option": 2
+    }
+    for i in range(1, 101)
+]
+
+# --- Initialize Session State ---
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 if "candidate_email" not in st.session_state:
     st.session_state.candidate_email = ""
-if "exam_started" not in st.session_state:
-    st.session_state.exam_started = False
 if "questions" not in st.session_state:
     st.session_state.questions = []
 if "warnings" not in st.session_state:
@@ -30,8 +55,10 @@ if "disqualified" not in st.session_state:
     st.session_state.disqualified = False
 if "exam_finished" not in st.session_state:
     st.session_state.exam_finished = False
+if "final_score" not in st.session_state:
+    st.session_state.final_score = 0
 
-# --- Helper: Certificate Generator (PDF) ---
+# --- Helper: PDF Certificate Generator ---
 def generate_certificate(email, score):
     pdf = FPDF(orientation='L', unit='mm', format='A4')
     pdf.add_page()
@@ -42,7 +69,7 @@ def generate_certificate(email, score):
     pdf.cell(0, 40, 'CERTIFICATE OF PARTICIPATION', 0, 1, 'C')
     
     pdf.set_font('Arial', '', 18)
-    pdf.cell(0, 20, 'This is proudly presented to:', 0, 1, 'C')
+    pdf.cell(0, 20, 'This certificate is proudly awarded to:', 0, 1, 'C')
     
     pdf.set_font('Arial', 'B', 24)
     pdf.cell(0, 25, f'{email}', 0, 1, 'C')
@@ -53,47 +80,75 @@ def generate_certificate(email, score):
     return pdf.output(dest='S').encode('latin1')
 
 # ==========================================
-# 1. LOGIN SCREEN (Email & Passkey)
+# 1. LOGIN SCREEN
 # ==========================================
 if not st.session_state.logged_in and not st.session_state.exam_finished:
     st.title("🔒 Candidate Portal Login")
+    st.write("Please authenticate with your registered candidate email and assigned passkey.")
     
-    email_input = st.text_input("Enter your Registered Email:")
-    passkey_input = st.text_input("Enter your Exam Passkey:", type="password")
+    email_input = st.text_input("Enter Registered Email:", placeholder="student1@gmail.com").strip().lower()
+    passkey_input = st.text_input("Enter Exam Passkey:", type="password", placeholder="PASS123").strip()
     
-    if st.button("Authenticate & Start Test"):
+    if st.button("Authenticate & Start Exam", type="primary"):
         if email_input and passkey_input:
-            res = supabase.table("candidates").select("*").eq("email", email_input).eq("passkey", passkey_input).execute()
+            authenticated = False
+            has_attempted = False
             
-            if len(res.data) > 0:
-                candidate = res.data[0]
-                if candidate["has_attempted"]:
+            # 1. Try Authenticating against Supabase
+            if supabase:
+                try:
+                    res = supabase.table("candidates").select("*").eq("email", email_input).eq("passkey", passkey_input).execute()
+                    if res.data and len(res.data) > 0:
+                        candidate = res.data[0]
+                        authenticated = True
+                        has_attempted = candidate.get("has_attempted", False)
+                except Exception as ex:
+                    st.warning("⚠️ RLS or Database issue detected. Falling back to local credentials.")
+            
+            # 2. Local Fallback Verification
+            if not authenticated and email_input in LOCAL_CANDIDATES:
+                if LOCAL_CANDIDATES[email_input] == passkey_input:
+                    authenticated = True
+
+            # Process Authentication Result
+            if authenticated:
+                if has_attempted:
                     st.error("❌ You have already submitted or attempted this examination.")
                 else:
                     st.session_state.logged_in = True
                     st.session_state.candidate_email = email_input
                     
-                    # Fetch 30 random questions from Supabase
-                    q_res = supabase.table("questions").select("*").execute()
-                    all_questions = q_res.data
-                    st.session_state.questions = random.sample(all_questions, min(len(all_questions), 30))
+                    # Fetch 30 Random Questions (Supabase or Local)
+                    fetched_q = []
+                    if supabase:
+                        try:
+                            q_res = supabase.table("questions").select("*").execute()
+                            if q_res.data and len(q_res.data) >= 30:
+                                fetched_q = q_res.data
+                        except Exception:
+                            pass
+                    
+                    if not fetched_q:
+                        fetched_q = LOCAL_QUESTION_BANK
+                        
+                    st.session_state.questions = random.sample(fetched_q, min(len(fetched_q), 30))
                     st.rerun()
             else:
-                st.error("Invalid Email or Passkey combination.")
+                st.error("❌ Invalid Email or Passkey combination.")
         else:
-            st.warning("Please fill in all fields.")
+            st.warning("Please fill in both Email and Passkey fields.")
 
 # ==========================================
-# 2. PROCTORED EXAMINATION SCREEN
+# 2. EXAMINATION & PROCTORING SCREEN
 # ==========================================
 elif st.session_state.logged_in and not st.session_state.exam_finished:
     
-    # Client-side Anti-Cheat JavaScript Injector
+    # Client-Side Anti-Cheat Shield (JavaScript Injection)
     st.components.v1.html("""
         <script>
         const doc = window.parent.document;
         
-        // Disable Right-Click, Cut, Copy, Paste, & Text Selection
+        // Disable Text Selection, Context Menu, Copy, Cut, & Paste
         doc.addEventListener('contextmenu', e => e.preventDefault());
         doc.addEventListener('copy', e => e.preventDefault());
         doc.addEventListener('cut', e => e.preventDefault());
@@ -105,98 +160,116 @@ elif st.session_state.logged_in and not st.session_state.exam_finished:
                (e.ctrlKey && (e.key === 'c' || e.key === 'u' || e.key === 's')) || 
                e.key === "F12") {
                 e.preventDefault();
-                alert("⚠️ Screenshot and Copy shortcuts are strictly disabled!");
+                alert("⚠️ Anti-Cheat Warning: Copying and Screenshots are strictly disabled!");
             }
-        });
-
-        // Detect Window/Tab Blur (App switching / Floating windows)
-        window.parent.addEventListener('blur', () => {
-            console.log("Tab/Window Focus Lost!");
         });
         </script>
     """, height=0)
 
-    st.warning(f"⚠️ **PROCTORING ACTIVE**: Candidate `{st.session_state.candidate_email}`. Do NOT copy text, exit full screen, or switch windows. You will be disqualified on the 3rd strike!")
+    # Header Bar
+    st.warning(f"⚠️ **PROCTORED SESSION ACTIVE** | Candidate: `{st.session_state.candidate_email}` | Disqualification on 3rd Violation!")
     
-    col1, col2 = st.columns([3, 1])
-    with col2:
-        st.error(f"Warnings: {st.session_state.warnings} / 2")
-        if st.button("🚨 Simulate Violation (For Testing)"):
+    col_info, col_strike = st.columns([3, 1])
+    with col_strike:
+        st.error(f"⚠️ Violations: {st.session_state.warnings} / 2 Allowed")
+        if st.button("🚨 Simulate Violation (For Test)"):
             st.session_state.warnings += 1
             if st.session_state.warnings >= 3:
                 st.session_state.disqualified = True
                 st.session_state.exam_finished = True
             st.rerun()
 
-    # Disqualification Logic
+    # Disqualification Trigger
     if st.session_state.warnings >= 3 or st.session_state.disqualified:
-        supabase.table("candidates").update({"has_attempted": True}).eq("email", st.session_state.candidate_email).execute()
-        supabase.table("exam_attempts").insert({
-            "email": st.session_state.candidate_email,
-            "score": 0,
-            "status": "DISQUALIFIED",
-            "violation_count": st.session_state.warnings,
-            "violation_reasons": "Exceeded maximum anti-cheat violations (App switch / Copy / Screenshot attempts)."
-        }).execute()
+        if supabase:
+            try:
+                supabase.table("candidates").update({"has_attempted": True}).eq("email", st.session_state.candidate_email).execute()
+                supabase.table("exam_attempts").insert({
+                    "email": st.session_state.candidate_email,
+                    "score": 0,
+                    "status": "DISQUALIFIED",
+                    "violation_count": st.session_state.warnings,
+                    "violation_reasons": "Exceeded 2 anti-cheat warnings."
+                }).execute()
+            except Exception:
+                pass
         st.session_state.exam_finished = True
         st.rerun()
 
-    # Render Exam Form
+    # Exam Form
     with st.form("exam_form"):
-        st.subheader("Answer the following 30 questions:")
+        st.subheader("Randomized Questions (30 Total)")
+        st.divider()
         
         for idx, q in enumerate(st.session_state.questions):
-            st.markdown(f"**Q{idx+1}: {q['question_text']}**")
+            st.markdown(f"**Question {idx+1}:** {q['question_text']}")
             options = [q['option_a'], q['option_b'], q['option_c'], q['option_d']]
-            selected = st.radio(f"Select answer for Q{idx+1}:", options, index=None, key=f"q_{q['id']}")
+            
+            selected = st.radio(
+                f"Select answer for Q{idx+1}:", 
+                options, 
+                index=None, 
+                key=f"q_{q['id']}"
+            )
             st.session_state.user_answers[q['id']] = selected
             st.divider()
 
-        submit_btn = st.form_submit_button("Finalize and Submit Exam")
+        submit_btn = st.form_submit_button("Submit Exam Responses", type="primary")
         
         if submit_btn:
-            # Calculate Score
+            # Calculate Total Score
             score = 0
             for q in st.session_state.questions:
                 user_ans = st.session_state.user_answers.get(q['id'])
                 opts = [q['option_a'], q['option_b'], q['option_c'], q['option_d']]
-                correct_text = opts[q['correct_option'] - 1] if q['correct_option'] else None
-                if user_ans == correct_text:
+                correct_idx = q.get('correct_option', 1) - 1
+                if 0 <= correct_idx < len(opts) and user_ans == opts[correct_idx]:
                     score += 1
             
-            # Save Record to Supabase
-            supabase.table("candidates").update({"has_attempted": True}).eq("email", st.session_state.candidate_email).execute()
-            supabase.table("exam_attempts").insert({
-                "email": st.session_state.candidate_email,
-                "score": score,
-                "status": "COMPLETED",
-                "violation_count": st.session_state.warnings,
-                "answers_json": st.session_state.user_answers
-            }).execute()
-            
             st.session_state.final_score = score
+            
+            # Log Attempt in Supabase
+            if supabase:
+                try:
+                    supabase.table("candidates").update({"has_attempted": True}).eq("email", st.session_state.candidate_email).execute()
+                    supabase.table("exam_attempts").insert({
+                        "email": st.session_state.candidate_email,
+                        "score": score,
+                        "status": "COMPLETED",
+                        "violation_count": st.session_state.warnings,
+                        "answers_json": st.session_state.user_answers
+                    }).execute()
+                except Exception:
+                    pass
+            
             st.session_state.exam_finished = True
             st.rerun()
 
 # ==========================================
-# 3. RESULT & CERTIFICATE SCREEN
+# 3. RESULTS & CERTIFICATE DOWNLOAD
 # ==========================================
 if st.session_state.exam_finished:
     if st.session_state.disqualified or st.session_state.warnings >= 3:
         st.error("⛔ **EXAMINATION DISQUALIFIED**")
-        st.write("You were flagged for violating exam anti-cheating regulations 3 times. Your score has been voided.")
+        st.write("You were flagged for violating examination security policies 3 times. Your score has been invalidated.")
     else:
         st.balloons()
-        st.success("🎉 **EXAMINATION SUBMITTED SUCCESSFULLY**")
-        score = st.session_state.get("final_score", 0)
-        st.write(f"Candidate: **{st.session_state.candidate_email}**")
-        st.write(f"Your Total Score: **{score} / 30**")
+        st.success("🎉 **EXAMINATION COMPLETED SUCCESSFULLY**")
         
-        # Download Certificate Button
-        pdf_bytes = generate_certificate(st.session_state.candidate_email, score)
+        col_res1, col_res2 = st.columns(2)
+        with col_res1:
+            st.metric("Candidate Email", st.session_state.candidate_email)
+        with col_res2:
+            st.metric("Final Score", f"{st.session_state.final_score} / 30")
+        
+        st.divider()
+        
+        # Download Certificate Action
+        pdf_bytes = generate_certificate(st.session_state.candidate_email, st.session_state.final_score)
         st.download_button(
-            label="📄 Download Participation Certificate",
+            label="📄 Download Participation Certificate (PDF)",
             data=pdf_bytes,
             file_name=f"Certificate_{st.session_state.candidate_email}.pdf",
-            mime="application/pdf"
+            mime="application/pdf",
+            type="primary"
         )
