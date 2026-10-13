@@ -59,10 +59,9 @@ if "final_score" not in st.session_state:
 if "fullscreen_active" not in st.session_state:
     st.session_state.fullscreen_active = False
 
-# Query Parameters Handler for Anti-Cheat Callbacks
-query_params = st.query_params
-if "action" in query_params:
-    action = query_params["action"]
+# Handle Violation Callbacks from Query Params
+if "action" in st.query_params:
+    action = st.query_params["action"]
     if action == "violation":
         st.session_state.warnings += 1
         if st.session_state.warnings >= 3:
@@ -148,92 +147,113 @@ if not st.session_state.logged_in and not st.session_state.exam_finished:
             st.warning("Please fill in both Email and Passkey fields.")
 
 # ==========================================
-# 2. FULL SCREEN GATEWAY & PROCTORED EXAM
+# 2. PROCTORED EXAM WITH NON-BLOCKING ANTI-CHEAT
 # ==========================================
 elif st.session_state.logged_in and not st.session_state.exam_finished:
 
+    # Initial Gate to Trigger Fullscreen natively via User Click
     if not st.session_state.fullscreen_active:
         st.subheader("🛡️ Proctoring Pre-Check")
-        st.warning("This examination requires mandatory **Full-Screen Mode**. Exiting full-screen, switching apps, or attempting screenshots will add a strike violation!")
+        st.warning("This examination requires mandatory **Full-Screen Mode**. Exiting full-screen, switching tabs, or taking screenshots will register a strike penalty!")
         
-        col_center = st.columns([1, 2, 1])[1]
-        with col_center:
-            if st.button("🚀 Enable Full-Screen & Start Examination", type="primary", use_container_width=True):
-                st.session_state.fullscreen_active = True
-                st.rerun()
+        st.components.v1.html("""
+            <div style="text-align: center; margin-top: 10px;">
+                <button id="start-btn" style="background-color: #ff4b4b; color: white; border: none; padding: 16px 32px; font-size: 18px; font-weight: bold; border-radius: 8px; cursor: pointer;">
+                    🚀 Request Full-Screen & Start Exam
+                </button>
+            </div>
+            <script>
+            document.getElementById('start-btn').addEventListener('click', function() {
+                const docEl = window.parent.document.documentElement;
+                if (docEl.requestFullscreen) {
+                    docEl.requestFullscreen().catch(e => console.log(e));
+                } else if (docEl.webkitRequestFullscreen) {
+                    docEl.webkitRequestFullscreen().catch(e => console.log(e));
+                }
+                window.parent.location.search = '?fullscreen_ok=true';
+            });
+            </script>
+        """, height=80)
+
+        if "fullscreen_ok" in st.query_params:
+            st.session_state.fullscreen_active = True
+            st.query_params.clear()
+            st.rerun()
 
     else:
-        # Full Anti-Cheat Monitoring Suite (Fires directly in top window context)
+        # Non-Blocking Anti-Cheat Suite Injection
         st.components.v1.html("""
+            <div id="reenter-banner" style="display:none; position:fixed; top:0; left:0; width:100%; background:#d9534f; color:white; text-align:center; padding:12px; z-index:999999; font-weight:bold; font-size:16px;">
+                ⚠️ FULLSCREEN EXITED! 
+                <button id="reenter-btn" style="margin-left:15px; padding:6px 16px; background:white; color:#d9534f; border:none; font-weight:bold; border-radius:4px; cursor:pointer;">
+                    Click Here to Re-enter Fullscreen
+                </button>
+            </div>
+
             <script>
             const doc = window.parent.document;
             const win = window.parent;
+            const banner = document.getElementById('reenter-banner');
+            const reenterBtn = document.getElementById('reenter-btn');
 
-            // Automatically request full screen on parent window load
-            if (!doc.fullscreenElement && !doc.webkitFullscreenElement) {
-                const docEl = doc.documentElement;
-                if (docEl.requestFullscreen) {
-                    docEl.requestFullscreen().catch(err => console.log(err));
-                } else if (docEl.webkitRequestFullscreen) {
-                    docEl.webkitRequestFullscreen().catch(err => console.log(err));
-                }
-            }
-
-            function recordViolation(reason) {
-                alert("🚨 CHEAT WARNING: " + reason + "\\nA penalty strike has been registered!");
+            function triggerViolation() {
                 const currentUrl = new URL(win.location.href);
                 currentUrl.searchParams.set('action', 'violation');
                 win.location.href = currentUrl.toString();
             }
 
-            // 1. Context Menu & Selection Prevention
+            // Re-enter Fullscreen Handler
+            reenterBtn.addEventListener('click', () => {
+                const docEl = doc.documentElement;
+                if (docEl.requestFullscreen) {
+                    docEl.requestFullscreen();
+                } else if (docEl.webkitRequestFullscreen) {
+                    docEl.webkitRequestFullscreen();
+                }
+                banner.style.display = 'none';
+            });
+
+            // 1. Prevent Text Selection, Copy, Cut, Paste & Context Menu
             doc.addEventListener('contextmenu', e => e.preventDefault());
             doc.addEventListener('copy', e => e.preventDefault());
             doc.addEventListener('cut', e => e.preventDefault());
             doc.addEventListener('paste', e => e.preventDefault());
 
-            // 2. Keyboard Shortcut Prevention
+            // 2. Block Keyboard Shortcuts (PrintScreen, Ctrl+C, Ctrl+V, F12)
             doc.addEventListener('keydown', e => {
                 if (e.key === "PrintScreen" || 
                    (e.ctrlKey && (e.key === 'c' || e.key === 'u' || e.key === 's' || e.key === 'v')) || 
                    e.key === "F12") {
                     e.preventDefault();
-                    recordViolation("Screenshot / Copy keyboard shortcut attempt detected.");
+                    triggerViolation();
                 }
             });
 
-            // 3. Full Screen Exit Detection
+            // 3. Monitor Fullscreen Exits
             doc.addEventListener('fullscreenchange', () => {
                 if (!doc.fullscreenElement && !doc.webkitFullscreenElement) {
-                    recordViolation("Exited Full-Screen mode!");
+                    banner.style.display = 'block';
+                    triggerViolation();
+                } else {
+                    banner.style.display = 'none';
                 }
             });
 
-            // 4. Tab Switch & App Blur Detection
+            // 4. Tab Switching & Visibility Detection
             doc.addEventListener('visibilitychange', () => {
                 if (doc.hidden) {
-                    recordViolation("Switched browser tabs or minimized window!");
+                    triggerViolation();
                 }
-            });
-            
-            win.addEventListener('blur', () => {
-                recordViolation("Focus lost! Floating window or background app used.");
             });
             </script>
         """, height=0)
 
-        # Header Information
+        # Main Examination Interface
         st.warning(f"⚠️ **PROCTORED SESSION ACTIVE** | Candidate: `{st.session_state.candidate_email}`")
         
         col_info, col_strike = st.columns([3, 1])
         with col_strike:
             st.error(f"⚠️ Violations: {st.session_state.warnings} / 2 Allowed")
-            if st.button("🚨 Test Violation Trigger"):
-                st.session_state.warnings += 1
-                if st.session_state.warnings >= 3:
-                    st.session_state.disqualified = True
-                    st.session_state.exam_finished = True
-                st.rerun()
 
         # Disqualification Handler
         if st.session_state.warnings >= 3 or st.session_state.disqualified:
@@ -252,7 +272,7 @@ elif st.session_state.logged_in and not st.session_state.exam_finished:
             st.session_state.exam_finished = True
             st.rerun()
 
-        # Exam Questions Form
+        # Questions Form
         with st.form("exam_form"):
             st.subheader("Randomized Questions (30 Total)")
             st.divider()
