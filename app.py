@@ -15,13 +15,13 @@ def init_supabase():
         key = st.secrets.get("SUPABASE_KEY")
         if url and key:
             return create_client(url, key)
-    except Exception as e:
-        st.warning("⚠️ Supabase connection warning: Defaulting to local session mode.")
+    except Exception:
+        pass
     return None
 
 supabase = init_supabase()
 
-# --- Fallback Local Data (Used if Supabase is empty or restricted) ---
+# --- Fallback Local Data ---
 LOCAL_CANDIDATES = {
     "student1@gmail.com": "PASS123",
     "student2@gmail.com": "PASS456"
@@ -57,6 +57,20 @@ if "exam_finished" not in st.session_state:
     st.session_state.exam_finished = False
 if "final_score" not in st.session_state:
     st.session_state.final_score = 0
+if "fullscreen_active" not in st.session_state:
+    st.session_state.fullscreen_active = False
+
+# Query Parameters Handler for Anti-Cheat Callbacks
+query_params = st.query_params
+if "action" in query_params:
+    action = query_params["action"]
+    if action == "violation":
+        st.session_state.warnings += 1
+        if st.session_state.warnings >= 3:
+            st.session_state.disqualified = True
+            st.session_state.exam_finished = True
+        st.query_params.clear()
+        st.rerun()
 
 # --- Helper: PDF Certificate Generator ---
 def generate_certificate(email, score):
@@ -89,7 +103,7 @@ if not st.session_state.logged_in and not st.session_state.exam_finished:
     email_input = st.text_input("Enter Registered Email:", placeholder="student1@gmail.com").strip().lower()
     passkey_input = st.text_input("Enter Exam Passkey:", type="password", placeholder="PASS123").strip()
     
-    if st.button("Authenticate & Start Exam", type="primary"):
+    if st.button("Authenticate Candidate", type="primary"):
         if email_input and passkey_input:
             authenticated = False
             has_attempted = False
@@ -102,8 +116,8 @@ if not st.session_state.logged_in and not st.session_state.exam_finished:
                         candidate = res.data[0]
                         authenticated = True
                         has_attempted = candidate.get("has_attempted", False)
-                except Exception as ex:
-                    st.warning("⚠️ RLS or Database issue detected. Falling back to local credentials.")
+                except Exception:
+                    pass
             
             # 2. Local Fallback Verification
             if not authenticated and email_input in LOCAL_CANDIDATES:
@@ -118,7 +132,7 @@ if not st.session_state.logged_in and not st.session_state.exam_finished:
                     st.session_state.logged_in = True
                     st.session_state.candidate_email = email_input
                     
-                    # Fetch 30 Random Questions (Supabase or Local)
+                    # Fetch 30 Random Questions
                     fetched_q = []
                     if supabase:
                         try:
@@ -139,111 +153,168 @@ if not st.session_state.logged_in and not st.session_state.exam_finished:
             st.warning("Please fill in both Email and Passkey fields.")
 
 # ==========================================
-# 2. EXAMINATION & PROCTORING SCREEN
+# 2. FULL SCREEN GATEWAY & PROCTORED EXAM
 # ==========================================
 elif st.session_state.logged_in and not st.session_state.exam_finished:
-    
-    # Client-Side Anti-Cheat Shield (JavaScript Injection)
-    st.components.v1.html("""
-        <script>
-        const doc = window.parent.document;
-        
-        // Disable Text Selection, Context Menu, Copy, Cut, & Paste
-        doc.addEventListener('contextmenu', e => e.preventDefault());
-        doc.addEventListener('copy', e => e.preventDefault());
-        doc.addEventListener('cut', e => e.preventDefault());
-        doc.addEventListener('paste', e => e.preventDefault());
-        
-        // Block Keyboard Shortcuts (PrintScreen, Ctrl+C, Ctrl+U, F12)
-        doc.addEventListener('keydown', e => {
-            if (e.key === "PrintScreen" || 
-               (e.ctrlKey && (e.key === 'c' || e.key === 'u' || e.key === 's')) || 
-               e.key === "F12") {
-                e.preventDefault();
-                alert("⚠️ Anti-Cheat Warning: Copying and Screenshots are strictly disabled!");
-            }
-        });
-        </script>
-    """, height=0)
 
-    # Header Bar
-    st.warning(f"⚠️ **PROCTORED SESSION ACTIVE** | Candidate: `{st.session_state.candidate_email}` | Disqualification on 3rd Violation!")
-    
-    col_info, col_strike = st.columns([3, 1])
-    with col_strike:
-        st.error(f"⚠️ Violations: {st.session_state.warnings} / 2 Allowed")
-        if st.button("🚨 Simulate Violation (For Test)"):
-            st.session_state.warnings += 1
-            if st.session_state.warnings >= 3:
-                st.session_state.disqualified = True
-                st.session_state.exam_finished = True
+    # Enforce Fullscreen Trigger Button
+    if not st.session_state.fullscreen_active:
+        st.subheader("🛡️ Proctoring Pre-Check")
+        st.warning("This examination requires mandatory **Full-Screen Mode**. Exiting full-screen, switching apps, or attempting screenshots will add a strike violation!")
+        
+        # JavaScript Fullscreen Initiator Component
+        st.components.v1.html("""
+            <div style="text-align: center; margin-top: 20px;">
+                <button id="fs-btn" style="background-color: #ff4b4b; color: white; border: none; padding: 15px 32px; text-align: center; font-size: 18px; font-weight: bold; border-radius: 8px; cursor: pointer;">
+                    🚀 Enable Full-Screen & Start Examination
+                </button>
+            </div>
+            <script>
+            document.getElementById('fs-btn').addEventListener('click', function() {
+                const docEl = window.parent.document.documentElement;
+                if (docEl.requestFullscreen) {
+                    docEl.requestFullscreen();
+                } else if (docEl.webkitRequestFullscreen) {
+                    docEl.webkitRequestFullscreen();
+                } else if (docEl.msRequestFullscreen) {
+                    docEl.msRequestFullscreen();
+                }
+                
+                // Signal Python backend that full screen was enabled
+                window.parent.location.search = '?fullscreen=true';
+            });
+            </script>
+        """, height=100)
+        
+        if "fullscreen" in st.query_params:
+            st.session_state.fullscreen_active = True
+            st.query_params.clear()
             st.rerun()
 
-    # Disqualification Trigger
-    if st.session_state.warnings >= 3 or st.session_state.disqualified:
-        if supabase:
-            try:
-                supabase.table("candidates").update({"has_attempted": True}).eq("email", st.session_state.candidate_email).execute()
-                supabase.table("exam_attempts").insert({
-                    "email": st.session_state.candidate_email,
-                    "score": 0,
-                    "status": "DISQUALIFIED",
-                    "violation_count": st.session_state.warnings,
-                    "violation_reasons": "Exceeded 2 anti-cheat warnings."
-                }).execute()
-            except Exception:
-                pass
-        st.session_state.exam_finished = True
-        st.rerun()
+    else:
+        # Full Anti-Cheat Monitoring Suite
+        st.components.v1.html("""
+            <script>
+            const doc = window.parent.document;
+            const win = window.parent;
 
-    # Exam Form
-    with st.form("exam_form"):
-        st.subheader("Randomized Questions (30 Total)")
-        st.divider()
-        
-        for idx, q in enumerate(st.session_state.questions):
-            st.markdown(f"**Question {idx+1}:** {q['question_text']}")
-            options = [q['option_a'], q['option_b'], q['option_c'], q['option_d']]
-            
-            selected = st.radio(
-                f"Select answer for Q{idx+1}:", 
-                options, 
-                index=None, 
-                key=f"q_{q['id']}"
-            )
-            st.session_state.user_answers[q['id']] = selected
-            st.divider()
+            function recordViolation(reason) {
+                alert("🚨 CHEAT WARNING: " + reason + "\\nA penalty strike has been registered!");
+                win.location.search = '?action=violation';
+            }
 
-        submit_btn = st.form_submit_button("Submit Exam Responses", type="primary")
+            // 1. Disable Right Click, Copy, Cut, Paste, and Selection
+            doc.addEventListener('contextmenu', e => e.preventDefault());
+            doc.addEventListener('copy', e => e.preventDefault());
+            doc.addEventListener('cut', e => e.preventDefault());
+            doc.addEventListener('paste', e => e.preventDefault());
+
+            // 2. Block Keyboard Shortcuts (PrintScreen, Ctrl+C, Ctrl+V, F12)
+            doc.addEventListener('keydown', e => {
+                if (e.key === "PrintScreen" || 
+                   (e.ctrlKey && (e.key === 'c' || e.key === 'u' || e.key === 's' || e.key === 'v')) || 
+                   e.key === "F12") {
+                    e.preventDefault();
+                    recordViolation("Screenshot / Copy keyboard shortcut attempt detected.");
+                }
+            });
+
+            // 3. Monitor Full Screen Exit
+            doc.addEventListener('fullscreenchange', () => {
+                if (!doc.fullscreenElement) {
+                    recordViolation("Exited Full-Screen mode!");
+                }
+            });
+
+            // 4. Monitor Window/Tab Switch & Floating Apps
+            doc.addEventListener('visibilitychange', () => {
+                if (doc.hidden) {
+                    recordViolation("Switched browser tabs or minimized window!");
+                }
+            });
+            
+            win.addEventListener('blur', () => {
+                recordViolation("Focus lost! Floating window or background app used.");
+            });
+            </script>
+        """, height=0)
+
+        # Header Information
+        st.warning(f"⚠️ **PROCTORED SESSION ACTIVE** | Candidate: `{st.session_state.candidate_email}`")
         
-        if submit_btn:
-            # Calculate Total Score
-            score = 0
-            for q in st.session_state.questions:
-                user_ans = st.session_state.user_answers.get(q['id'])
-                opts = [q['option_a'], q['option_b'], q['option_c'], q['option_d']]
-                correct_idx = q.get('correct_option', 1) - 1
-                if 0 <= correct_idx < len(opts) and user_ans == opts[correct_idx]:
-                    score += 1
-            
-            st.session_state.final_score = score
-            
-            # Log Attempt in Supabase
+        col_info, col_strike = st.columns([3, 1])
+        with col_strike:
+            st.error(f"⚠️ Violations: {st.session_state.warnings} / 2 Allowed")
+            if st.button("🚨 Test Violation Trigger"):
+                st.session_state.warnings += 1
+                if st.session_state.warnings >= 3:
+                    st.session_state.disqualified = True
+                    st.session_state.exam_finished = True
+                st.rerun()
+
+        # Disqualification Handler
+        if st.session_state.warnings >= 3 or st.session_state.disqualified:
             if supabase:
                 try:
                     supabase.table("candidates").update({"has_attempted": True}).eq("email", st.session_state.candidate_email).execute()
                     supabase.table("exam_attempts").insert({
                         "email": st.session_state.candidate_email,
-                        "score": score,
-                        "status": "COMPLETED",
+                        "score": 0,
+                        "status": "DISQUALIFIED",
                         "violation_count": st.session_state.warnings,
-                        "answers_json": st.session_state.user_answers
+                        "violation_reasons": "Exceeded 2 anti-cheat warnings."
                     }).execute()
                 except Exception:
                     pass
-            
             st.session_state.exam_finished = True
             st.rerun()
+
+        # Exam Questions Form
+        with st.form("exam_form"):
+            st.subheader("Randomized Questions (30 Total)")
+            st.divider()
+            
+            for idx, q in enumerate(st.session_state.questions):
+                st.markdown(f"**Question {idx+1}:** {q['question_text']}")
+                options = [q['option_a'], q['option_b'], q['option_c'], q['option_d']]
+                
+                selected = st.radio(
+                    f"Select answer for Q{idx+1}:", 
+                    options, 
+                    index=None, 
+                    key=f"q_{q['id']}"
+                )
+                st.session_state.user_answers[q['id']] = selected
+                st.divider()
+
+            submit_btn = st.form_submit_button("Submit Exam Responses", type="primary")
+            
+            if submit_btn:
+                score = 0
+                for q in st.session_state.questions:
+                    user_ans = st.session_state.user_answers.get(q['id'])
+                    opts = [q['option_a'], q['option_b'], q['option_c'], q['option_d']]
+                    correct_idx = q.get('correct_option', 1) - 1
+                    if 0 <= correct_idx < len(opts) and user_ans == opts[correct_idx]:
+                        score += 1
+                
+                st.session_state.final_score = score
+                
+                if supabase:
+                    try:
+                        supabase.table("candidates").update({"has_attempted": True}).eq("email", st.session_state.candidate_email).execute()
+                        supabase.table("exam_attempts").insert({
+                            "email": st.session_state.candidate_email,
+                            "score": score,
+                            "status": "COMPLETED",
+                            "violation_count": st.session_state.warnings,
+                            "answers_json": st.session_state.user_answers
+                        }).execute()
+                    except Exception:
+                        pass
+                
+                st.session_state.exam_finished = True
+                st.rerun()
 
 # ==========================================
 # 3. RESULTS & CERTIFICATE DOWNLOAD
@@ -264,7 +335,6 @@ if st.session_state.exam_finished:
         
         st.divider()
         
-        # Download Certificate Action
         pdf_bytes = generate_certificate(st.session_state.candidate_email, st.session_state.final_score)
         st.download_button(
             label="📄 Download Participation Certificate (PDF)",
